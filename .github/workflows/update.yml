@@ -1,1 +1,35 @@
+name: Auto Update Vua Sanco M3U
+
+on:
+  schedule:
+    # Chạy tự động mỗi 30 phút
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Cho phép nhấn nút chạy thủ công trên GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests pytz
+
+      - name: Run script generate_m3u.py
+        run: python generate_m3u.py
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add vuasanco.m3u
+          git diff-index --quiet HEAD || git commit -m "Auto update playlist M3U [skip ci]"
+          git push
 
