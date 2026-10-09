@@ -30,7 +30,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install curl_cffi pytz
+          pip install playwright pytz
+          playwright install chromium --with-deps
 
       - name: Run script generate_m3u.py
         run: python generate_m3u.py
@@ -42,4 +43,3 @@ jobs:
           git add vuasanco.m3u
           git diff-index --quiet HEAD || git commit -m "Auto update playlist M3U [skip ci]"
           git push
-          
