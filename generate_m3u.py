@@ -1,10 +1,29 @@
 from datetime import datetime, timedelta
 import json
 import time
-from playwright.sync_api import sync_playwright
 import pytz
+from curl_cffi import requests
 
-# Múi giờ Việt Nam
+# API URL
+API_URL = "https://www.livinginterior.in/api/proxy/data/lives/matches"
+
+# Giả lập IP Việt Nam (Quảng Trị / TP.HCM) và Header Chrome thật
+HEADERS = {
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    "content-type": "application/json",
+    "origin": "https://www.livinginterior.in",
+    "referer": "https://www.livinginterior.in/",
+    "user-agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+        " like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "x-forwarded-for": "113.160.225.18",
+    "x-real-ip": "113.160.225.18",
+    "cf-connecting-ip": "113.160.225.18",
+}
+
+# Lấy múi giờ Việt Nam
 tz = pytz.timezone("Asia/Ho_Chi_Minh")
 now = datetime.now(tz)
 today_str = now.strftime("%Y-%m-%d")
@@ -13,206 +32,135 @@ tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 m3u_lines = ["#EXTM3U\n"]
 added_urls = set()
 
+# Danh sách Proxy dự phòng (Châu Á / Việt Nam)
+PROXIES = [
+    None,  # Thử kết nối trực tiếp trước với Header Fake IP
+    "http://103.152.118.38:80",
+    "http://103.179.189.106:8080",
+    "http://117.2.193.18:8080",
+    "http://103.9.159.214:8080",
+]
 
-def add_matches_to_m3u(matches):
-  count = 0
-  for match in matches:
-    if not isinstance(match, dict):
-      continue
 
-    match_date = match.get("date", "")
-    match_time = match.get("time", "")
-
+def fetch_api_data(session, payload):
+  """Gửi POST request qua các Proxy cho đến khi thành công"""
+  for proxy in PROXIES:
     try:
-      formatted_date = datetime.strptime(match_date, "%Y-%m-%d").strftime(
-          "%d/%m"
-      )
+      kwargs = {
+          "headers": HEADERS,
+          "json": payload,
+          "timeout": 10,
+          "allow_redirects": False,
+      }
+      if proxy:
+        kwargs["proxies"] = {"http": proxy, "https": proxy}
+
+      res = session.post(API_URL, **kwargs)
+
+      # Nếu dính redirect Nginx, thử gọi lại đường dẫn có dấu gạch chéo cuối
+      if res.status_code in (301, 302, 307, 308, 405):
+        alt_url = "https://www.livinginterior.in/api/proxy/data/lives/matches/"
+        res = session.post(alt_url, **kwargs)
+
+      if res.status_code == 200:
+        return res.json()
     except Exception:
-      formatted_date = match_date
-
-    home_team = match.get("home", {}).get("name", "Unknown")
-    away_team = match.get("away", {}).get("name", "Unknown")
-    home_logo = match.get("home", {}).get("logo", "")
-
-    lives = match.get("lives") or []
-
-    for live in lives:
-      if not isinstance(live, dict):
-        continue
-
-      stream_url = (
-          live.get("link") or live.get("linkSecure") or live.get("streamUrl")
-      )
-      if not stream_url or stream_url in added_urls:
-        continue
-
-      added_urls.add(stream_url)
-      commentator = (
-          live.get("commentator") or live.get("commentatorSource") or "VSC"
-      )
-      is_live = live.get("isLive", False) or match.get("status") == 2
-      live_icon = "🟢 " if is_live else ""
-
-      title = (
-          f"{live_icon}{match_time} {formatted_date} ⚽ {home_team} vs"
-          f" {away_team} ({commentator})"
-      )
-
-      m3u_lines.append(
-          f'#EXTINF:-1 tvg-logo="{home_logo}" group-title="Vua Sân Cỏ TV" ,'
-          f" {title}"
-      )
-      m3u_lines.append(f"{stream_url}\n")
-      count += 1
-  return count
+      continue
+  return None
 
 
-with sync_playwright() as p:
-  browser = p.chromium.launch(
-      headless=True,
-      args=[
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-blink-features=AutomationControlled",
-          "--disable-dev-shm-usage",
-      ],
-  )
+session = requests.Session(impersonate="chrome120")
 
-  context = browser.new_context(
-      user_agent=(
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-      ),
-      viewport={"width": 1280, "height": 720},
-      locale="vi-VN",
-      timezone_id="Asia/Ho_Chi_Minh",
-  )
+for date_str in [today_str, tomorrow_str]:
+  for is_live in [True, False]:
+    page = 1
+    total_pages = 1
 
-  page = context.new_page()
+    while page <= total_pages:
+      payload = {
+          "date": date_str,
+          "page": page,
+          "pageSize": 18,
+          "status": 1,
+          "timezone": "Asia/Ho_Chi_Minh",
+          "isLive": is_live,
+      }
 
-  # Giả lập thuộc tính trình duyệt thật
-  page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-        window.chrome = { runtime: {} };
-    """)
+      res_json = fetch_api_data(session, payload)
 
-  # Bắt tự động response API khi trang web tự gọi
-  def handle_response(response):
-    if (
-        "/api/proxy/data/lives/matches" in response.url
-        and response.status == 200
-    ):
-      try:
-        res_json = response.json()
-        if res_json.get("code") == 1000:
-          data = res_json.get("result", {}).get("data", [])
-          if data:
-            added = add_matches_to_m3u(data)
-            print(
-                f"-> [Bắt tự động Network] Lấy được {len(data)} trận ({added}"
-                " luồng mới)"
+      if res_json and res_json.get("code") == 1000:
+        result = res_json.get("result", {})
+        total_pages = result.get("totalPages", 1)
+        matches = result.get("data") or []
+
+        count = 0
+        for match in matches:
+          if not isinstance(match, dict):
+            continue
+
+          match_date = match.get("date", "")
+          match_time = match.get("time", "")
+
+          try:
+            formatted_date = datetime.strptime(
+                match_date, "%Y-%m-%d"
+            ).strftime("%d/%m")
+          except Exception:
+            formatted_date = match_date
+
+          home_team = match.get("home", {}).get("name", "Unknown")
+          away_team = match.get("away", {}).get("name", "Unknown")
+          home_logo = match.get("home", {}).get("logo", "")
+
+          lives = match.get("lives") or []
+
+          for live in lives:
+            if not isinstance(live, dict):
+              continue
+
+            stream_url = (
+                live.get("link")
+                or live.get("linkSecure")
+                or live.get("streamUrl")
             )
-      except Exception:
-        pass
+            if not stream_url or stream_url in added_urls:
+              continue
 
-  page.on("response", handle_response)
-
-  print("-> Đang tải trang chủ Vua Sân Cỏ TV...")
-  try:
-    page.goto(
-        "https://www.livinginterior.in/",
-        wait_until="domcontentloaded",
-        timeout=45000,
-    )
-    time.sleep(5)
-    print(f"-> Tiêu đề trang web: '{page.title()}'")
-  except Exception as e:
-    print(f"⚠️ Cảnh báo tải trang: {e}")
-
-  # Kiểm tra nếu dính Cloudflare Challenge
-  title = page.title()
-  if any(
-      kw in title
-      for kw in ["Just a moment", "Cloudflare", "Attention Required"]
-  ):
-    print("⚠️ Trình duyệt đang ở màn hình xác thực Cloudflare, chờ 10s...")
-    time.sleep(10)
-    print(f"-> Tiêu đề sau khi chờ: '{page.title()}'")
-
-  # JS script gọi fetch trực tiếp từ trong Browser
-  fetch_js = """
-        async (payload) => {
-            try {
-                const res = await window.fetch('/api/proxy/data/lives/matches', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json, text/plain, */*'
-                    },
-                    body: JSON.stringify(payload)
-                });
-                const text = await res.text();
-                try {
-                    return { status: res.status, data: JSON.parse(text) };
-                } catch (e) {
-                    return { status: res.status, rawText: text.substring(0, 200) };
-                }
-            } catch (err) {
-                return { status: 0, error: err.toString() };
-            }
-        }
-    """
-
-  for date_str in [today_str, tomorrow_str]:
-    for is_live in [True, False]:
-      page_num = 1
-      total_pages = 1
-
-      while page_num <= total_pages:
-        payload = {
-            "date": date_str,
-            "page": page_num,
-            "pageSize": 18,
-            "status": 1,
-            "timezone": "Asia/Ho_Chi_Minh",
-            "isLive": is_live,
-        }
-
-        res_obj = page.evaluate(fetch_js, payload)
-        status = res_obj.get("status", 0)
-
-        if status == 200 and "data" in res_obj:
-          res_json = res_obj["data"]
-          if res_json.get("code") == 1000:
-            result = res_json.get("result", {})
-            total_pages = result.get("totalPages", 1)
-            matches = result.get("data") or []
-            added = add_matches_to_m3u(matches)
-            print(
-                f"-> Ngày {date_str} (isLive={is_live}, Trang"
-                f" {page_num}/{total_pages}): Tìm thấy {len(matches)} trận"
-                f" ({added} luồng mới)"
+            added_urls.add(stream_url)
+            commentator = (
+                live.get("commentator")
+                or live.get("commentatorSource")
+                or "VSC"
             )
-          else:
-            print(
-                f"⚠️ API trả về code {res_json.get('code')} cho ngày {date_str}"
+            is_match_live = (
+                live.get("isLive", False) or match.get("status") == 2
             )
-            break
-        else:
-          err_msg = (
-              res_obj.get("error")
-              or res_obj.get("rawText")
-              or f"HTTP status {status}"
-          )
-          print(
-              f"⚠️ Không thể gọi API ngày {date_str} (isLive={is_live}, Trang"
-              f" {page_num}): {err_msg}"
-          )
-          break
+            live_icon = "🟢 " if is_match_live else ""
 
-        page_num += 1
+            title = (
+                f"{live_icon}{match_time} {formatted_date} ⚽ {home_team} vs"
+                f" {away_team} ({commentator})"
+            )
 
-  browser.close()
+            m3u_lines.append(
+                f'#EXTINF:-1 tvg-logo="{home_logo}"'
+                f' group-title="Vua Sân Cỏ TV" , {title}'
+            )
+            m3u_lines.append(f"{stream_url}\n")
+            count += 1
+
+        print(
+            f"-> Ngày {date_str} (isLive={is_live}, Trang {page}/{total_pages}):"
+            f" Lấy được {len(matches)} trận ({count} luồng mới)"
+        )
+      else:
+        print(
+            f"⚠️ Không lấy được dữ liệu ngày {date_str} (isLive={is_live}, Trang"
+            f" {page})"
+        )
+        break
+
+      page += 1
 
 # Ghi file vuasanco.m3u
 with open("vuasanco.m3u", "w", encoding="utf-8") as f:
