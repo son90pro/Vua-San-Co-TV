@@ -1,19 +1,19 @@
 from datetime import datetime, timedelta
 import json
-from curl_cffi import requests
 import pytz
+from curl_cffi import requests
 
 # Cấu hình API Vua Sân Cỏ TV
 API_URL = "https://www.livinginterior.in/api/proxy/data/lives/matches"
+
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
-    "Origin": "https://www.livinginterior.in",
-    "Referer": "https://www.livinginterior.in/",
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-        " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Android 16; Mobile; rv:156.0) Gecko/156.0 Firefox/156.0"
     ),
+    "Referer": "https://www.livinginterior.in/",
+    "Origin": "https://www.livinginterior.in",
 }
 
 # Lấy múi giờ Việt Nam
@@ -26,6 +26,9 @@ dates_to_fetch = [today_str, tomorrow_str]
 
 m3u_lines = ["#EXTM3U"]
 added_urls = set()
+
+# Khởi tạo Session giả lập Chrome 120 duy trì kết nối
+session = requests.Session(impersonate="chrome120")
 
 for target_date in dates_to_fetch:
   for is_hot in [True, False]:
@@ -42,19 +45,24 @@ for target_date in dates_to_fetch:
       }
 
       try:
-        # Sử dụng impersonate="chrome120" để vượt Cloudflare
-        response = requests.post(
-            API_URL,
-            headers=HEADERS,
-            json=payload,
-            impersonate="chrome120",
-            timeout=15,
+        # Gửi request thông qua Session
+        response = session.post(
+            API_URL, headers=HEADERS, json=payload, timeout=15
         )
+
+        # Xử lý nếu gặp 405 do redirect thiếu gạch chéo cuối URL
+        if response.status_code == 405:
+          alt_url = (
+              "https://www.livinginterior.in/api/proxy/data/lives/matches/"
+          )
+          response = session.post(
+              alt_url, headers=HEADERS, json=payload, timeout=15
+          )
 
         if response.status_code != 200:
           print(
-              f"⚠️ API trả về lỗi HTTP {response.status_code} cho ngày"
-              f" {target_date} (isHot={is_hot})"
+              f"⚠️ API trả về HTTP {response.status_code} cho ngày {target_date}"
+              f" (isHot={is_hot})"
           )
           break
 
@@ -122,7 +130,7 @@ for target_date in dates_to_fetch:
 
       page += 1
 
-# Ghi dữ liệu ra file m3u
+# Ghi file vuasanco.m3u
 with open("vuasanco.m3u", "w", encoding="utf-8") as f:
   f.write("\n".join(m3u_lines) + "\n")
 
