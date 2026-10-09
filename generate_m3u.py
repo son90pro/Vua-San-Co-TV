@@ -3,13 +3,14 @@ import json
 import pytz
 from curl_cffi import requests
 
-API_URL = "https://www.livinginterior.in/api/proxy/data/lives/matches"
+# URL chuẩn KHÔNG CÓ www (tránh bị Nginx 301 redirect đổi POST thành GET)
+API_URL = "https://livinginterior.in/api/proxy/data/lives/matches"
 
 HEADERS = {
     "accept": "application/json, text/plain, */*",
     "content-type": "application/json",
-    "origin": "https://www.livinginterior.in",
-    "referer": "https://www.livinginterior.in/",
+    "origin": "https://livinginterior.in",
+    "referer": "https://livinginterior.in/",
     "user-agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
         " like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -26,9 +27,9 @@ seen_urls = set()
 
 session = requests.Session(impersonate="chrome120")
 
-# Khởi tạo session
+# Khởi tạo session với trang chủ
 try:
-  session.get("https://www.livinginterior.in/", headers=HEADERS, timeout=10)
+  session.get("https://livinginterior.in/", headers=HEADERS, timeout=10)
 except Exception:
   pass
 
@@ -51,11 +52,7 @@ for date_str in [today_str, tomorrow_str]:
 
       try:
         res = session.post(
-            API_URL,
-            headers=HEADERS,
-            json=payload,
-            timeout=15,
-            allow_redirects=False,
+            API_URL, headers=HEADERS, json=payload, timeout=15
         )
 
         if res.status_code == 200:
