@@ -12,6 +12,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      - name: Setup Cloudflare WARP
+        uses: fscarmen/warp-action@v1
+        with:
+          country: SG
+
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -31,4 +36,3 @@ jobs:
           git add vuasanco.m3u
           git diff-index --quiet HEAD || git commit -m "Auto update playlist M3U [skip ci]"
           git push
-          
