@@ -19,8 +19,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright pytz
-          playwright install chromium --with-deps
+          pip install curl_cffi pytz
 
       - name: Run script generate_m3u.py
         run: python generate_m3u.py
