@@ -15,26 +15,29 @@ m3u_lines = ["#EXTM3U"]
 added_urls = set()
 
 with sync_playwright() as p:
-  # Mở trình duyệt Chromium ngầm
+  # Khởi tạo trình duyệt Chromium
   browser = p.chromium.launch(headless=True)
   context = browser.new_context(
       user_agent=(
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-          " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       )
   )
   page = context.new_page()
 
-  print("-> Đang truy cập Vua Sân Cỏ TV...")
+  print("-> Đang mở trang chủ Vua Sân Cỏ TV...")
   try:
     page.goto(
         "https://www.livinginterior.in/",
         wait_until="domcontentloaded",
         timeout=30000,
     )
-    page.wait_for_timeout(3000)  # Chờ 3 giây để vượt Cloudflare
+    page.wait_for_timeout(3000)  # Chờ 3s vượt Cloudflare
   except Exception as e:
     print(f"⚠️ Tải trang chủ có cảnh báo: {e}")
+
+  # Dùng APIRequestContext gửi request trực tiếp ở tầng Browser Network
+  api = context.request
 
   for target_date in dates_to_fetch:
     for is_hot in [True, False]:
@@ -51,37 +54,24 @@ with sync_playwright() as p:
         }
 
         try:
-          # Gọi fetch() trực tiếp từ trong Browser
-          res_json = page.evaluate(
-              """
-                        async (payload) => {
-                            try {
-                                const res = await fetch('/api/proxy/data/lives/matches', {
-                                    method: 'POST',
-                                    headers: {
-                                        'Content-Type': 'application/json',
-                                        'Accept': 'application/json, text/plain, */*'
-                                    },
-                                    body: JSON.stringify(payload)
-                                });
-                                if (!res.ok) return { error: `HTTP ${res.status}` };
-                                return await res.json();
-                            } catch (e) {
-                                return { error: e.toString() };
-                            }
-                        }
-                    """,
-              payload,
+          response = api.post(
+              "https://www.livinginterior.in/api/proxy/data/lives/matches",
+              data=payload,
+              headers={
+                  "Accept": "application/json, text/plain, */*",
+                  "Origin": "https://www.livinginterior.in",
+                  "Referer": "https://www.livinginterior.in/",
+              },
           )
 
-          if not res_json or "error" in res_json:
-            err_msg = res_json.get("error") if res_json else "No response"
+          if response.status != 200:
             print(
-                f"⚠️ Lỗi API ngày {target_date} (isHot={is_hot},"
-                f" page={page_num}): {err_msg}"
+                f"⚠️ API trả về HTTP {response.status} cho ngày {target_date}"
+                f" (isHot={is_hot}, page={page_num})"
             )
             break
 
+          res_json = response.json()
           if res_json.get("code") == 1000:
             result = res_json.get("result", {})
             total_pages = result.get("totalPages", 1)
@@ -130,7 +120,10 @@ with sync_playwright() as p:
                 is_live = live.get("isLive", False) or match.get("status") == 2
                 live_icon = "🟢 " if is_live else ""
 
-                title = f"{live_icon}{match_time} {formatted_date} ⚽ {home_team} vs {away_team} ({commentator})"
+                title = (
+                    f"{live_icon}{match_time} {formatted_date} ⚽"
+                    f" {home_team} vs {away_team} ({commentator})"
+                )
 
                 m3u_lines.append(
                     f'#EXTINF:-1 tvg-logo="{home_logo}"'
