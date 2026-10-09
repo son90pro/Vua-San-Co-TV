@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
 import json
+import time
 from playwright.sync_api import sync_playwright
 import pytz
 
-# Lấy múi giờ Việt Nam
+# Múi giờ Việt Nam
 tz = pytz.timezone("Asia/Ho_Chi_Minh")
 now = datetime.now(tz)
 today_str = now.strftime("%Y-%m-%d")
@@ -15,71 +16,126 @@ m3u_lines = ["#EXTM3U"]
 added_urls = set()
 
 with sync_playwright() as p:
-  # Khởi tạo trình duyệt Chromium
-  browser = p.chromium.launch(headless=True)
+  # Khởi tạo Chromium với tham số ẩn danh tránh bị Cloudflare bắt Headless
+  browser = p.chromium.launch(
+      headless=True,
+      args=[
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-blink-features=AutomationControlled",
+      ],
+  )
+
   context = browser.new_context(
       user_agent=(
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      )
+          " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      ),
+      viewport={"width": 1280, "height": 720},
   )
+
   page = context.new_page()
+
+  # Giả lập thuộc tính của trình duyệt người dùng thật
+  page.add_init_script(
+      "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+  )
 
   print("-> Đang mở trang chủ Vua Sân Cỏ TV...")
   try:
     page.goto(
         "https://www.livinginterior.in/",
-        wait_until="domcontentloaded",
-        timeout=30000,
+        wait_until="networkidle",
+        timeout=45000,
     )
-    page.wait_for_timeout(3000)  # Chờ 3s vượt Cloudflare
+    time.sleep(3)  # Chờ 3 giây để Cloudflare cấp Cookie cf_clearance
   except Exception as e:
     print(f"⚠️ Tải trang chủ có cảnh báo: {e}")
 
-  # Dùng APIRequestContext gửi request trực tiếp ở tầng Browser Network
-  api = context.request
+  # Script fetch chạy trực tiếp bên trong Browser Context (đã vượt Cloudflare)
+  fetch_js = """
+        async (payload) => {
+            try {
+                const response = await fetch('https://www.livinginterior.in/api/proxy/data/lives/matches', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/plain, */*',
+                        'Origin': 'https://www.livinginterior.in',
+                        'Referer': 'https://www.livinginterior.in/'
+                    },
+                    body: JSON.stringify(payload),
+                    redirect: 'manual'
+                });
+                
+                if (response.type === 'opaqueredirect' || response.status === 301 || response.status === 302) {
+                    return { error: 'REDIRECTED' };
+                }
+                if (!response.ok) return { error: 'HTTP ' + response.status };
+                return await response.json();
+            } catch (err) {
+                return { error: err.toString() };
+            }
+        }
+    """
 
   for target_date in dates_to_fetch:
-    for is_hot in [True, False]:
+    # Các cấu hình Payload dựa trên trace mạng thực tế
+    payload_configs = [
+        {
+            "date": target_date,
+            "pageSize": 50,
+            "timezone": "Asia/Ho_Chi_Minh",
+            "status": 1,
+            "isLive": True,
+        },
+        {
+            "date": target_date,
+            "pageSize": 50,
+            "timezone": "Asia/Ho_Chi_Minh",
+            "status": 1,
+        },
+        {
+            "date": target_date,
+            "pageSize": 50,
+            "timezone": "Asia/Ho_Chi_Minh",
+            "isHot": True,
+        },
+        {"date": target_date, "pageSize": 50, "timezone": "Asia/Ho_Chi_Minh"},
+    ]
+
+    for base_payload in payload_configs:
       page_num = 1
       total_pages = 1
 
       while page_num <= total_pages:
-        payload = {
-            "date": target_date,
-            "page": page_num,
-            "pageSize": 50,
-            "timezone": "Asia/Ho_Chi_Minh",
-            "isHot": is_hot,
-        }
+        payload = {**base_payload, "page": page_num}
 
         try:
-          response = api.post(
-              "https://www.livinginterior.in/api/proxy/data/lives/matches",
-              data=payload,
-              headers={
-                  "Accept": "application/json, text/plain, */*",
-                  "Origin": "https://www.livinginterior.in",
-                  "Referer": "https://www.livinginterior.in/",
-              },
-          )
+          res_json = page.evaluate(fetch_js, payload)
 
-          if response.status != 200:
+          # Nếu phát hiện bị Cloudflare Redirect, reload lại trang để lấy Cookie mới
+          if res_json and res_json.get("error") in ["REDIRECTED", "HTTP 405"]:
             print(
-                f"⚠️ API trả về HTTP {response.status} cho ngày {target_date}"
-                f" (isHot={is_hot}, page={page_num})"
+                f"⚠️ Phát hiện redirect ({res_json.get('error')}), đang làm mới"
+                " session..."
             )
-            break
+            page.goto(
+                "https://www.livinginterior.in/",
+                wait_until="networkidle",
+                timeout=30000,
+            )
+            time.sleep(3)
+            res_json = page.evaluate(fetch_js, payload)
 
-          res_json = response.json()
-          if res_json.get("code") == 1000:
+          if res_json and res_json.get("code") == 1000:
             result = res_json.get("result", {})
             total_pages = result.get("totalPages", 1)
             matches = result.get("data") or []
 
             print(
-                f"-> Ngày {target_date} (isHot={is_hot}, trang"
-                f" {page_num}/{total_pages}): tìm thấy {len(matches)} trận"
+                f"-> Ngày {target_date} (Trang {page_num}/{total_pages}): Tìm"
+                f" thấy {len(matches)} trận"
             )
 
             for match in matches:
@@ -130,8 +186,11 @@ with sync_playwright() as p:
                     f' group-title="Vua Sân Cỏ TV" , {title}'
                 )
                 m3u_lines.append(stream_url)
+
           else:
-            print(f"⚠️ API trả về code: {res_json.get('code')}")
+            err_detail = res_json.get("error") if res_json else "Không có dữ liệu"
+            print(f"⚠️ Thông báo API ngày {target_date}: {err_detail}")
+            break
 
         except Exception as e:
           print(f"❌ Lỗi xử lý ngày {target_date}: {e}")
@@ -141,7 +200,7 @@ with sync_playwright() as p:
 
   browser.close()
 
-# Ghi file vuasanco.m3u
+# Ghi dữ liệu ra file m3u
 with open("vuasanco.m3u", "w", encoding="utf-8") as f:
   f.write("\n".join(m3u_lines) + "\n")
 
